@@ -12,7 +12,10 @@ const MONGO_URI = process.env.MONGO_URI; // Carga la "llave" de la base de datos
 
 // --- 3. MIDDLEWARES ---
 app.use(express.json()); // Para que Express entienda JSON
-app.use(cors());
+const corsOptions = {
+  origin: 'https://cuidar-med-frontend.vercel.app'
+};
+app.use(cors(corsOptions));
 
 // --- 4. CONEXIÓN A LA BASE DE DATOS ---
 // Esta es una función que se "auto-ejecuta"
