@@ -1,4 +1,5 @@
 // --- 1. IMPORTACIONES ---
+// Forzando una actualización para Render
 const express = require('express');
 const mongoose = require('mongoose');
 require('dotenv').config(); // Carga nuestras variables de entorno (el .env)
