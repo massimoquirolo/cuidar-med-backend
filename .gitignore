@@ -1,0 +1,5 @@
+# Ignorar la carpeta de paquetes
+node_modules/
+
+# ¡Ignorar nuestro archivo de secretos!
+.env
