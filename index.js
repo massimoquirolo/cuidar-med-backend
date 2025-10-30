@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 require('dotenv').config(); // Carga nuestras variables de entorno (el .env)
 const Medicamento = require('./models/Medicamento'); // Importamos nuestro "molde"
 const cors = require('cors'); // <--- 1. IMPORTA CORS
+const { ejecutarDescuentoStock } = require('./worker.js'); // Importamos la función
 
 // --- 2. CONFIGURACIÓN INICIAL ---
 const app = express();
@@ -173,4 +174,24 @@ app.delete('/api/medicamentos/:id', async (req, res) => {
   } catch (error) {
     res.status(500).json({ mensaje: "Error al eliminar el medicamento", error });
   }
+});
+
+// [NUEVO] Ruta secreta para disparar el worker
+app.get('/api/trigger-worker', (req, res) => {
+  const { secret } = req.query; // Busca el secreto en la URL
+
+  // 1. Verificamos que el secreto sea correcto
+  if (secret !== process.env.CRON_SECRET) {
+    console.log('Intento de ejecución de worker RECHAZADO (secreto incorrecto)');
+    return res.status(401).send('No autorizado');
+  }
+
+  // 2. Si es correcto, respondemos INMEDIATAMENTE
+  console.log('Intento de ejecución de worker ACEPTADO.');
+  res.status(200).send('Tarea de descuento iniciada. (La tarea corre en segundo plano)');
+
+  // 3. Y LUEGO, ejecutamos la tarea (sin "await")
+  // Esto (sin await) permite que el servicio de cron reciba la respuesta
+  // rápido, mientras la tarea pesada corre en segundo plano.
+  ejecutarDescuentoStock();
 });

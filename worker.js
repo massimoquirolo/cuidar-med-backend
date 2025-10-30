@@ -1,23 +1,22 @@
 // worker.js
 
 const mongoose = require('mongoose');
-const Medicamento = require('./models/Medicamento'); // Importamos el mismo "molde"
-require('dotenv').config(); // Carga el MONGO_URI
+const Medicamento = require('./models/Medicamento');
 
-// Función principal del trabajador
+// Convertimos el worker en una función que podemos "llamar"
 const ejecutarDescuentoStock = async () => {
-  console.log('--- Iniciando Worker de CuidarMed ---');
+  console.log('--- Iniciando Worker de CuidarMed (disparado por Cron) ---');
+  let conexion; // Variable para guardar la conexión
 
   try {
     // 1. Conectarnos a la base de datos
-    await mongoose.connect(process.env.MONGO_URI);
+    // Usamos una variable para poder cerrarla después
+    conexion = await mongoose.connect(process.env.MONGO_URI);
     console.log('Worker conectado a MongoDB.');
 
     // 2. Obtener la hora ACTUAL en Argentina
-    // Esto es crucial. El servidor de Render está en UTC (otro país).
-    // Necesitamos la hora de tu zona horaria.
     const opcionesHora = {
-      timeZone: 'America/Argentina/Buenos_Aires', // ¡Asegúrate que sea tu zona horaria!
+      timeZone: 'America/Argentina/Buenos_Aires', // ¡Tu zona horaria!
       hour: '2-digit',
       minute: '2-digit',
       hour12: false
@@ -27,10 +26,6 @@ const ejecutarDescuentoStock = async () => {
     console.log(`Hora actual (Argentina): ${horaActualArgentina}`);
 
     // 3. Buscar y actualizar medicamentos
-    // Buscamos todos los medicamentos que...
-    //   a) Tengan la hora actual en su array de 'horarios'
-    //   b) Tengan stock mayor a 0
-    // ...y les restamos 1 al 'stockActual'.
     const resultado = await Medicamento.updateMany(
       { 
         horarios: horaActualArgentina, 
@@ -50,12 +45,14 @@ const ejecutarDescuentoStock = async () => {
   } catch (error) {
     console.error('Error en el worker:', error);
   } finally {
-    // 4. Desconectarnos de la base de datos
-    await mongoose.disconnect();
-    console.log('Worker desconectado de MongoDB.');
+    // 4. Desconectarnos de la base de datos (si logramos conectarnos)
+    if (conexion) {
+      await mongoose.disconnect();
+      console.log('Worker desconectado de MongoDB.');
+    }
     console.log('--- Worker de CuidarMed finalizado ---');
   }
 };
 
-// Ejecutamos la función
-ejecutarDescuentoStock();
+// ¡LA PARTE CLAVE! Exportamos la función para que index.js pueda usarla
+module.exports = { ejecutarDescuentoStock };
