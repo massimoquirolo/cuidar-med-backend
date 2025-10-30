@@ -123,6 +123,9 @@ app.put('/api/medicamentos/:id/recargar', async (req, res) => {
         }
 
         medicamento.stockActual += cantidad; // Sumamos la cantidad al stock
+
+        medicamento.avisoStockEnviado = false;
+
         const medicamentoActualizado = await medicamento.save();
         
         console.log(`STOCK RECARGADO: ${medicamento.nombre} ahora tiene ${medicamento.stockActual} unidades.`);

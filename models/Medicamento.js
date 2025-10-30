@@ -23,7 +23,11 @@ const MedicamentoSchema = new mongoose.Schema({
     required: true,
     default: 5       // Por defecto, avisará cuando queden 5
   },
-  horarios: [String] // Un array de strings, ej: ["09:00", "21:00"]
+  horarios: [String], // Un array de strings, ej: ["09:00", "21:00"]
+  avisoStockEnviado: {
+    type: Boolean,
+    default: false
+  }
 });
 
 // Exportamos el modelo para que nuestro index.js pueda usarlo
