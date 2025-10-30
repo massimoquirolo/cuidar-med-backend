@@ -55,6 +55,7 @@ app.get('/api/medicamentos', async (req, res) => {
     const medicamentos = await Medicamento.find(); // .find() busca TODO
     res.json(medicamentos);
   } catch (error) {
+    console.error('ERROR en GET /api/medicamentos:', error); // <-- AÑADE ESTA LÍNEA
     res.status(500).json({ mensaje: "Error al obtener medicamentos", error });
   }
 });
@@ -68,6 +69,7 @@ app.post('/api/medicamentos', async (req, res) => {
     const medicamentoGuardado = await nuevoMed.save();
     res.status(201).json(medicamentoGuardado); // 201 = Creado Exitosamente
   } catch (error) {
+    console.error('ERROR en GET /api/medicamentos:', error); // <-- AÑADE ESTA LÍNEA
     res.status(400).json({ mensaje: "Error al guardar el medicamento", error });
   }
 });
@@ -104,6 +106,7 @@ app.post('/api/tomas', async (req, res) => {
     res.json(medicamentoActualizado);
 
   } catch (error) {
+    console.error('ERROR en GET /api/medicamentos:', error); // <-- AÑADE ESTA LÍNEA
     res.status(500).json({ mensaje: "Error al procesar la toma", error });
   }
 });
