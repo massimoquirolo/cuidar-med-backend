@@ -27,6 +27,15 @@ const MedicamentoSchema = new mongoose.Schema({
   avisoStockEnviado: {
     type: Boolean,
     default: false
+  },
+  // [NUEVOS CAMPOS]
+  fechaVencimiento: {
+    type: Date,
+    required: false // ¡Es opcional!
+  },
+  avisoVencimientoEnviado: {
+    type: Boolean,
+    default: false
   }
 });
 

@@ -146,26 +146,42 @@ app.put('/api/medicamentos/:id/recargar', async (req, res) => {
 
 // [NUEVO] Ruta para ACTUALIZAR (Editar) un medicamento por ID
 // PUT /api/medicamentos/:id
+// [MODIFICADO] Ruta para ACTUALIZAR (Editar) un medicamento por ID
+// PUT /api/medicamentos/:id
 app.put('/api/medicamentos/:id', async (req, res) => {
   try {
-    const { id } = req.params; // Obtenemos el ID de la URL
-    const datosActualizados = req.body; // Obtenemos los nuevos datos del body
+    const { id } = req.params;
+    const datosActualizados = req.body;
 
-    // Buscamos y actualizamos en un solo paso
-    // { new: true } es para que nos devuelva el documento ya actualizado
+    // [NUEVA LÓGICA]
+    // 1. Buscamos el medicamento ANTES de actualizarlo
+    const medViejo = await Medicamento.findById(id);
+    if (!medViejo) {
+      return res.status(404).json({ mensaje: "Medicamento no encontrado" });
+    }
+
+    // 2. Comparamos si la fecha de vencimiento cambió
+    // (Convertimos a string para comparar fácil, si no, da error)
+    const fechaVieja = medViejo.fechaVencimiento ? medViejo.fechaVencimiento.toISOString() : null;
+    const fechaNueva = datosActualizados.fechaVencimiento ? datosActualizados.fechaVencimiento : null;
+
+    if (fechaNueva !== fechaVieja) {
+      // ¡La fecha cambió! Reseteamos el aviso.
+      console.log(`Reseteando aviso de vencimiento para ${medViejo.nombre}`);
+      datosActualizados.avisoVencimientoEnviado = false;
+    }
+
+    // 3. Ahora sí, actualizamos el medicamento
     const medicamentoActualizado = await Medicamento.findByIdAndUpdate(
       id, 
       datosActualizados, 
-      { new: true, runValidators: true } // runValidators es para que chequee el "molde"
+      { new: true, runValidators: true }
     );
-
-    if (!medicamentoActualizado) {
-      return res.status(404).json({ mensaje: "Medicamento no encontrado para actualizar" });
-    }
 
     res.json(medicamentoActualizado);
 
   } catch (error) {
+    console.error('ERROR en PUT /api/medicamentos/:id:', error); // (Asegúrate de tener el log)
     res.status(400).json({ mensaje: "Error al actualizar el medicamento", error });
   }
 });
