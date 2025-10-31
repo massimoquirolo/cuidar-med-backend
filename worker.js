@@ -2,60 +2,77 @@
 
 const mongoose = require('mongoose');
 const Medicamento = require('./models/Medicamento');
-const { Resend } = require('resend'); // <--- 1. Importamos Resend
 
-// 2. Creamos la instancia de Resend (usa la variable de Render)
-const resend = new Resend(process.env.RESEND_API_KEY); 
+// ¡Ya no importamos Resend!
 
-// Función para enviar el email (¡mucho más simple!)
-const enviarEmail = async (medicamento) => {
-  console.log(`Intentando enviar email para ${medicamento.nombre}...`);
+// Nueva función para enviar un mensaje de Telegram
+const enviarTelegram = async (medicamento) => {
+  console.log(`Intentando enviar Telegram para ${medicamento.nombre}...`);
+  
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  
+  const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+  
+  // Mensaje con formato HTML (Telegram lo soporta)
+  const mensaje = `
+<b>🔔 Alerta de Stock Bajo 🔔</b>
 
+El medicamento <b>${medicamento.nombre} (${medicamento.dosis})</b> se está acabando.
+
+Quedan solo <b>${medicamento.stockActual}</b> unidades (el mínimo es ${medicamento.stockMinimo}).
+
+Por favor, recarga el stock en la aplicación.
+  `;
+  
   try {
-    const { data, error } = await resend.emails.send({
-      // 3. ¡IMPORTANTE! Usamos el "dominio de prueba" de Resend
-      from: 'CuidarMed Alerta <onboarding@resend.dev>', 
-      to: [process.env.EMAIL_TO], // Tu email personal (de .env)
-      subject: `¡Alerta de Stock Bajo! - ${medicamento.nombre}`,
-      html: `
-        <h1>Alerta de Stock Bajo</h1>
-        <p>El medicamento <strong>${medicamento.nombre} (${medicamento.dosis})</strong> se está acabando.</p>
-        <p>Quedan solo <strong>${medicamento.stockActual}</strong> unidades (el mínimo es ${medicamento.stockMinimo}).</p>
-        <p>Por favor, recarga el stock en la aplicación.</p>
-      `
+    // Usamos fetch (que ya viene en Node.js) para enviar el mensaje
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: mensaje,
+        parse_mode: 'HTML', // Le decimos a Telegram que use HTML
+      }),
     });
-
-    // 4. Manejamos la respuesta de Resend
-    if (error) {
-      console.error(`Error de Resend:`, error);
+    
+    const data = await response.json();
+    
+    if (!data.ok) {
+      // Si Telegram da un error (ej: chat no encontrado)
+      console.error('Error de la API de Telegram:', data.description);
       return false;
     }
-
-    console.log(`Email de alerta enviado con éxito para: ${medicamento.nombre}`);
+    
+    console.log(`Telegram enviado con éxito para: ${medicamento.nombre}`);
     return true;
-
+    
   } catch (error) {
-    console.error(`Error al enviar email (catch):`, error);
+    console.error(`Error al enviar Telegram (catch):`, error);
     return false;
   }
 };
 
-// --- Función principal (sin cambios) ---
+// --- Función principal (modificada para llamar a enviarTelegram) ---
 const ejecutarDescuentoStock = async () => {
-  console.log('--- Iniciando Worker de CuidarMed (con Resend) ---');
-
+  console.log('--- Iniciando Worker de CuidarMed (con Telegram) ---');
+  
   try {
-    // ... (Obtener hora actual, igual que antes) ...
+    // Obtenemos la hora actual en Argentina
     const opcionesHora = { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit', hour12: false };
     const horaActualArgentina = new Date().toLocaleString('es-AR', opcionesHora);
+    console.log(`Hora actual (Argentina): ${horaActualArgentina}`);
 
-    // ... (Descontamos el stock, igual que antes) ...
+    // Descontamos el stock (igual que antes)
     await Medicamento.updateMany(
       { horarios: horaActualArgentina, stockActual: { $gt: 0 } },
       { $inc: { stockActual: -1 } }
     );
 
-    // ... (Lógica de buscar stock bajo, igual que antes) ...
+    // Buscamos medicamentos que necesiten aviso
     const medicamentosConStockBajo = await Medicamento.find({
       $expr: { $lte: ["$stockActual", "$stockMinimo"] }, 
       avisoStockEnviado: false 
@@ -63,11 +80,12 @@ const ejecutarDescuentoStock = async () => {
 
     if (medicamentosConStockBajo.length > 0) {
       console.log(`Encontrados ${medicamentosConStockBajo.length} medicamentos con stock bajo para notificar.`);
-
+      
       for (const med of medicamentosConStockBajo) {
-        const emailEnviado = await enviarEmail(med);
-
-        if (emailEnviado) {
+        // *** ¡AQUÍ ESTÁ EL CAMBIO! ***
+        const telegramEnviado = await enviarTelegram(med); 
+        
+        if (telegramEnviado) {
           med.avisoStockEnviado = true;
           await med.save();
         }
