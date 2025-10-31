@@ -6,6 +6,7 @@ require('dotenv').config(); // Carga nuestras variables de entorno (el .env)
 const Medicamento = require('./models/Medicamento'); // Importamos nuestro "molde"
 const cors = require('cors'); // <--- 1. IMPORTA CORS
 const { ejecutarDescuentoStock } = require('./worker.js'); // Importamos la función
+const Historial = require('./models/Historial');
 
 // --- 2. CONFIGURACIÓN INICIAL ---
 const app = express();
@@ -127,6 +128,13 @@ app.put('/api/medicamentos/:id/recargar', async (req, res) => {
         medicamento.avisoStockEnviado = false;
 
         const medicamentoActualizado = await medicamento.save();
+
+        // Registramos la recarga en el historial
+        await Historial.create({
+          medicamentoNombre: medicamentoActualizado.nombre,
+          movimiento: cantidad,
+          tipo: 'Recarga'
+        });
         
         console.log(`STOCK RECARGADO: ${medicamento.nombre} ahora tiene ${medicamento.stockActual} unidades.`);
         res.json(medicamentoActualizado);
@@ -200,4 +208,15 @@ app.get('/api/trigger-worker', (req, res) => {
   // Esto (sin await) permite que el servicio de cron reciba la respuesta
   // rápido, mientras la tarea pesada corre en segundo plano.
   ejecutarDescuentoStock();
+});
+
+app.get('/api/historial', async (req, res) => {
+  try {
+    // Buscamos los últimos 50 registros, ordenados del más nuevo al más viejo
+    const historial = await Historial.find().sort({ fecha: -1 }).limit(50);
+    res.json(historial);
+  } catch (error) {
+    console.error('ERROR en GET /api/historial:', error);
+    res.status(500).json({ mensaje: "Error al obtener historial", error });
+  }
 });

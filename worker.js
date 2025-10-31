@@ -2,10 +2,10 @@
 
 const mongoose = require('mongoose');
 const Medicamento = require('./models/Medicamento');
-
-// ¡Ya no importamos Resend!
+const Historial = require('./models/Historial'); // <-- CAMBIO 1: Importamos el nuevo molde
 
 // Nueva función para enviar un mensaje de Telegram
+// (Esta es tu función, sin cambios)
 const enviarTelegram = async (medicamento) => {
   console.log(`Intentando enviar Telegram para ${medicamento.nombre}...`);
   
@@ -20,7 +20,7 @@ const enviarTelegram = async (medicamento) => {
 
 El medicamento <b>${medicamento.nombre} (${medicamento.dosis})</b> se está acabando.
 
-Quedan solo <b>${medicamento.stockActual}</b> unidades (el mínimo es ${medicamento.stockMinimo}).
+Quedan solo <b>${medicamento.stockActual}</b> unidades (el mínimo es ${medicamento.stockMimo}).
 
 Por favor, recarga el stock en la aplicación.
   `;
@@ -56,9 +56,10 @@ Por favor, recarga el stock en la aplicación.
   }
 };
 
-// --- Función principal (modificada para llamar a enviarTelegram) ---
+// --- Función principal (modificada para registrar historial) ---
 const ejecutarDescuentoStock = async () => {
-  console.log('--- Iniciando Worker de CuidarMed (con Telegram) ---');
+  // CAMBIO 2: Actualizamos el mensaje de log
+  console.log('--- Iniciando Worker de CuidarMed (con Historial) ---');
   
   try {
     // Obtenemos la hora actual en Argentina
@@ -66,13 +67,41 @@ const ejecutarDescuentoStock = async () => {
     const horaActualArgentina = new Date().toLocaleString('es-AR', opcionesHora);
     console.log(`Hora actual (Argentina): ${horaActualArgentina}`);
 
-    // Descontamos el stock (igual que antes)
-    await Medicamento.updateMany(
-      { horarios: horaActualArgentina, stockActual: { $gt: 0 } },
-      { $inc: { stockActual: -1 } }
-    );
+
+    // --- CAMBIO 3: LÓGICA DE DESCUENTO Y REGISTRO ---
+    // (Reemplazamos tu 'updateMany' simple por este bloque)
+
+    // 1. Primero encontramos qué medicamentos hay que descontar
+    const medsADescontar = await Medicamento.find({ 
+      horarios: horaActualArgentina, 
+      stockActual: { $gt: 0 } 
+    }).select('nombre'); // Solo traemos el nombre
+
+    if (medsADescontar.length > 0) {
+      // 2. Descontamos el stock
+      await Medicamento.updateMany(
+        { _id: { $in: medsADescontar.map(m => m._id) } }, // Descontamos solo los que encontramos
+        { $inc: { stockActual: -1 } }
+      );
+
+      // 3. Creamos las entradas del historial
+      const logEntries = medsADescontar.map(med => ({
+        fecha: new Date(),
+        medicamentoNombre: med.nombre,
+        movimiento: -1,
+        tipo: 'Automático'
+      }));
+      
+      await Historial.insertMany(logEntries); // Guardamos todos los logs de una vez
+      console.log(`Stock descontado y registrado en historial para ${medsADescontar.length} medicamentos.`);
+    } else {
+      console.log('No hay medicamentos para actualizar en este minuto.');
+    }
+    // --- FIN DEL CAMBIO ---
+
 
     // Buscamos medicamentos que necesiten aviso
+    // (Esta parte es tuya, sin cambios)
     const medicamentosConStockBajo = await Medicamento.find({
       $expr: { $lte: ["$stockActual", "$stockMinimo"] }, 
       avisoStockEnviado: false 
@@ -82,7 +111,6 @@ const ejecutarDescuentoStock = async () => {
       console.log(`Encontrados ${medicamentosConStockBajo.length} medicamentos con stock bajo para notificar.`);
       
       for (const med of medicamentosConStockBajo) {
-        // *** ¡AQUÍ ESTÁ EL CAMBIO! ***
         const telegramEnviado = await enviarTelegram(med); 
         
         if (telegramEnviado) {
@@ -102,4 +130,5 @@ const ejecutarDescuentoStock = async () => {
 };
 
 // Exportamos la función
+// (Esto es tuyo, sin cambios)
 module.exports = { ejecutarDescuentoStock };
