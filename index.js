@@ -64,13 +64,21 @@ app.get('/api/medicamentos', async (req, res) => {
 // POST /api/medicamentos - AGREGAR un nuevo medicamento
 app.post('/api/medicamentos', async (req, res) => {
   try {
-    // Creamos un nuevo medicamento usando el "molde" y los datos del body
     const nuevoMed = new Medicamento(req.body);
-    // Le pedimos a Mongoose que lo guarde en la BD
     const medicamentoGuardado = await nuevoMed.save();
-    res.status(201).json(medicamentoGuardado); // 201 = Creado Exitosamente
+
+    // [NUEVO] Registramos la "Carga Inicial" en el historial
+    if (medicamentoGuardado.stockActual > 0) {
+      await Historial.create({
+        medicamentoNombre: medicamentoGuardado.nombre,
+        movimiento: medicamentoGuardado.stockActual,
+        tipo: 'Carga Inicial'
+      });
+    }
+
+    res.status(201).json(medicamentoGuardado);
   } catch (error) {
-    console.error('ERROR en GET /api/medicamentos:', error); // <-- AÑADE ESTA LÍNEA
+    console.error('ERROR en POST /api/medicamentos:', error);
     res.status(400).json({ mensaje: "Error al guardar el medicamento", error });
   }
 });
@@ -144,44 +152,58 @@ app.put('/api/medicamentos/:id/recargar', async (req, res) => {
     }
 });
 
-// [NUEVO] Ruta para ACTUALIZAR (Editar) un medicamento por ID
-// PUT /api/medicamentos/:id
-// [MODIFICADO] Ruta para ACTUALIZAR (Editar) un medicamento por ID
-// PUT /api/medicamentos/:id
+// PUT /api/medicamentos/:id - ACTUALIZAR (Editar) un medicamento
 app.put('/api/medicamentos/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const datosActualizados = req.body;
 
-    // [NUEVA LÓGICA]
     // 1. Buscamos el medicamento ANTES de actualizarlo
     const medViejo = await Medicamento.findById(id);
     if (!medViejo) {
       return res.status(404).json({ mensaje: "Medicamento no encontrado" });
     }
 
-    // 2. Comparamos si la fecha de vencimiento cambió
-    // (Convertimos a string para comparar fácil, si no, da error)
+    // [LÓGICA DE VENCIMIENTO] (Esta ya la tenías)
     const fechaVieja = medViejo.fechaVencimiento ? medViejo.fechaVencimiento.toISOString() : null;
     const fechaNueva = datosActualizados.fechaVencimiento ? datosActualizados.fechaVencimiento : null;
 
     if (fechaNueva !== fechaVieja) {
-      // ¡La fecha cambió! Reseteamos el aviso.
-      console.log(`Reseteando aviso de vencimiento para ${medViejo.nombre}`);
       datosActualizados.avisoVencimientoEnviado = false;
     }
 
-    // 3. Ahora sí, actualizamos el medicamento
+    // 2. Ahora sí, actualizamos el medicamento
     const medicamentoActualizado = await Medicamento.findByIdAndUpdate(
       id, 
       datosActualizados, 
       { new: true, runValidators: true }
     );
 
+    // 3. [NUEVO] Comparamos el stock y registramos el cambio
+    const stockViejo = medViejo.stockActual;
+    const stockNuevo = medicamentoActualizado.stockActual;
+
+    if (stockViejo !== stockNuevo) {
+      const movimiento = stockNuevo - stockViejo; // Ej: 50 - 30 = +20
+
+      await Historial.create({
+        medicamentoNombre: medicamentoActualizado.nombre,
+        movimiento: movimiento,
+        tipo: 'Ajuste Manual' // O 'Recarga' si quieres
+      });
+
+      // [Opcional] Si el ajuste manual hace que el stock suba,
+      // reseteamos el aviso de "stock bajo"
+      if (stockNuevo > medViejo.stockMinimo) {
+         medicamentoActualizado.avisoStockEnviado = false;
+         await medicamentoActualizado.save();
+      }
+    }
+
     res.json(medicamentoActualizado);
 
   } catch (error) {
-    console.error('ERROR en PUT /api/medicamentos/:id:', error); // (Asegúrate de tener el log)
+    console.error('ERROR en PUT /api/medicamentos/:id:', error);
     res.status(400).json({ mensaje: "Error al actualizar el medicamento", error });
   }
 });
