@@ -101,10 +101,31 @@ app.post('/api/login', (req, res) => {
 // Usamos async/await porque hablar con la BD toma tiempo
 app.get('/api/medicamentos', authenticateToken, async (req, res) => {
   try {
-    const medicamentos = await Medicamento.find(); // .find() busca TODO
-    res.json(medicamentos);
+    // 1. Usamos .lean() para obtener objetos JS puros (más rápidos y fáciles de modificar)
+    const medicamentos = await Medicamento.find().lean(); 
+
+    // 2. [NUEVA LÓGICA] Iteramos sobre la lista para añadir el nuevo campo
+    const medicamentosConCalculo = medicamentos.map(med => {
+      let diasRestantes = 0; // Por defecto 0
+
+      // 3. Verificamos que tengamos horarios para evitar dividir por cero
+      if (med.horarios && med.horarios.length > 0) {
+        // 4. Hacemos el cálculo: Stock / Tomas por día
+        diasRestantes = Math.floor(med.stockActual / med.horarios.length);
+      }
+
+      // 5. Devolvemos el objeto original + el nuevo campo 'diasRestantes'
+      return {
+        ...med,
+        diasRestantes: diasRestantes 
+      };
+    });
+
+    // 6. Enviamos la lista MODIFICADA
+    res.json(medicamentosConCalculo); 
+
   } catch (error) {
-    console.error('ERROR en GET /api/medicamentos:', error); // <-- AÑADE ESTA LÍNEA
+    console.error('ERROR en GET /api/medicamentos:', error);
     res.status(500).json({ mensaje: "Error al obtener medicamentos", error });
   }
 });
