@@ -2,6 +2,7 @@
 // Forzando una actualización para Render
 const express = require('express');
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
 require('dotenv').config(); // Carga nuestras variables de entorno (el .env)
 const Medicamento = require('./models/Medicamento'); // Importamos nuestro "molde"
 const cors = require('cors'); // <--- 1. IMPORTA CORS
@@ -19,6 +20,31 @@ const corsOptions = {
   origin: 'https://cuidar-med-frontend.vercel.app'
 };
 app.use(cors(corsOptions));
+
+// --- 4. MIDDLEWARE DE AUTENTICACIÓN (El "Guardia") ---
+
+const authenticateToken = (req, res, next) => {
+  // Buscamos el "pase" en los headers de la petición
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Formato "Bearer TOKEN"
+
+  if (token == null) {
+    // No hay pase, lo rechazamos
+    return res.status(401).json({ mensaje: "No autorizado (Token no provisto)" });
+  }
+
+  // Verificamos si el pase es válido
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      // El pase es falso o expiró, lo rechazamos
+      return res.status(403).json({ mensaje: "Token inválido" });
+    }
+
+    // El pase es válido, dejamos que la petición continúe
+    req.user = user;
+    next();
+  });
+};
 
 // --- 4. CONEXIÓN A LA BASE DE DATOS ---
 // Esta es una función que se "auto-ejecuta"
@@ -49,9 +75,31 @@ app.get('/', (req, res) => {
   res.send('¡El cerebro de CuidarMed (Versión Personal) está funcionando y conectado a la BD!');
 });
 
+// [NUEVA RUTA DE LOGIN]
+app.post('/api/login', (req, res) => {
+  const { password } = req.body;
+
+  // 1. Comparamos la contraseña enviada con nuestro secreto
+  if (password !== process.env.APP_SECRET_PASSWORD) {
+    return res.status(401).json({ mensaje: "Contraseña incorrecta" });
+  }
+
+  // 2. La contraseña es correcta: Creamos un "pase" (JWT)
+  // Firmamos el pase con nuestro secreto JWT_SECRET.
+  // Hacemos que el pase dure 8 horas.
+  const token = jwt.sign(
+    { user: "admin" }, // Datos que guardamos dentro del pase
+    process.env.JWT_SECRET, 
+    { expiresIn: '8h' } // El pase caduca en 8 horas
+  );
+
+  // 3. Enviamos el pase al frontend
+  res.json({ token: token });
+});
+
 // GET /api/medicamentos - OBTENER todos los medicamentos
 // Usamos async/await porque hablar con la BD toma tiempo
-app.get('/api/medicamentos', async (req, res) => {
+app.get('/api/medicamentos', authenticateToken, async (req, res) => {
   try {
     const medicamentos = await Medicamento.find(); // .find() busca TODO
     res.json(medicamentos);
@@ -62,7 +110,7 @@ app.get('/api/medicamentos', async (req, res) => {
 });
 
 // POST /api/medicamentos - AGREGAR un nuevo medicamento
-app.post('/api/medicamentos', async (req, res) => {
+app.post('/api/medicamentos', authenticateToken, async (req, res) => {
   try {
     const nuevoMed = new Medicamento(req.body);
     const medicamentoGuardado = await nuevoMed.save();
@@ -84,7 +132,7 @@ app.post('/api/medicamentos', async (req, res) => {
 });
 
 // POST /api/tomas - CONFIRMAR UNA TOMA (Descontar stock)
-app.post('/api/tomas', async (req, res) => {
+app.post('/api/tomas', authenticateToken, async (req, res) => {
   try {
     const { medicamentoId } = req.body;
 
@@ -122,7 +170,7 @@ app.post('/api/tomas', async (req, res) => {
 
 // (Opcional) Ruta para RECARGAR STOCK
 // PUT /api/medicamentos/:id/recargar
-app.put('/api/medicamentos/:id/recargar', async (req, res) => {
+app.put('/api/medicamentos/:id/recargar', authenticateToken, async (req, res) => {
     try {
         const { cantidad } = req.body; // Esperamos un JSON: { "cantidad": 30 }
         const medicamento = await Medicamento.findById(req.params.id);
@@ -153,7 +201,7 @@ app.put('/api/medicamentos/:id/recargar', async (req, res) => {
 });
 
 // PUT /api/medicamentos/:id - ACTUALIZAR (Editar) un medicamento
-app.put('/api/medicamentos/:id', async (req, res) => {
+app.put('/api/medicamentos/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const datosActualizados = req.body;
@@ -210,7 +258,7 @@ app.put('/api/medicamentos/:id', async (req, res) => {
 
 // [NUEVO] Ruta para ELIMINAR un medicamento por ID
 // DELETE /api/medicamentos/:id
-app.delete('/api/medicamentos/:id', async (req, res) => {
+app.delete('/api/medicamentos/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -248,7 +296,7 @@ app.get('/api/trigger-worker', (req, res) => {
   ejecutarDescuentoStock();
 });
 
-app.get('/api/historial', async (req, res) => {
+app.get('/api/historial', authenticateToken, async (req, res) => {
   try {
     // Buscamos los últimos 50 registros, ordenados del más nuevo al más viejo
     const historial = await Historial.find().sort({ fecha: -1 }).limit(50);
