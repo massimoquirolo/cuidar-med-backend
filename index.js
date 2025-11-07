@@ -1,28 +1,29 @@
 // --- 1. IMPORTACIONES ---
-// Forzando una actualización para Render
 const express = require('express');
 const mongoose = require('mongoose');
+const cors = require('cors');
 const jwt = require('jsonwebtoken');
-require('dotenv').config(); // Carga nuestras variables de entorno (el .env)
-const Medicamento = require('./models/Medicamento'); // Importamos nuestro "molde"
-const cors = require('cors'); // <--- 1. IMPORTA CORS
-const { ejecutarDescuentoStock } = require('./worker.js'); // Importamos la función
+require('dotenv').config();
+const Medicamento = require('./models/Medicamento');
 const Historial = require('./models/Historial');
+const { ejecutarDescuentoStock } = require('./worker.js');
+const { enviarMensajeTelegram } = require('./telegramHelper.js');
 
 // --- 2. CONFIGURACIÓN INICIAL ---
 const app = express();
-const PORT = process.env.PORT || 3000; // Usa el puerto 3000 o el que esté en .env
-const MONGO_URI = process.env.MONGO_URI; // Carga la "llave" de la base de datos
+const PORT = process.env.PORT || 3000;
+const MONGO_URI = process.env.MONGO_URI;
 
 // --- 3. MIDDLEWARES ---
-app.use(express.json()); // Para que Express entienda JSON
+app.use(express.json());
+// Configuración de CORS específica para tu app de Vercel
 const corsOptions = {
   origin: 'https://cuidar-med-frontend.vercel.app'
 };
 app.use(cors(corsOptions));
 
-// --- 4. MIDDLEWARE DE AUTENTICACIÓN (El "Guardia") ---
 
+// --- 4. MIDDLEWARE DE AUTENTICACIÓN (El "Guardia") ---
 const authenticateToken = (req, res, next) => {
   // Buscamos el "pase" en los headers de la petición
   const authHeader = req.headers['authorization'];
@@ -39,104 +40,160 @@ const authenticateToken = (req, res, next) => {
       // El pase es falso o expiró, lo rechazamos
       return res.status(403).json({ mensaje: "Token inválido" });
     }
-
+    
     // El pase es válido, dejamos que la petición continúe
     req.user = user;
     next();
   });
 };
 
-// --- 4. CONEXIÓN A LA BASE DE DATOS ---
-// Esta es una función que se "auto-ejecuta"
-(async () => {
-  try {
-    // Intentamos conectarnos a MongoDB Atlas
-    await mongoose.connect(MONGO_URI);
-    console.log('¡Conectado exitosamente a MongoDB Atlas! 🚀');
 
-    // ¡IMPORTANTE!
-    // Solo si la conexión a la BD es exitosa, ponemos a escuchar al servidor.
-    app.listen(PORT, () => {
-      console.log(`Servidor escuchando en http://localhost:${PORT}`);
-    });
-
-  } catch (error) {
-    // Si la conexión falla, lo mostramos en consola y NO arrancamos el servidor.
-    console.error('Error al conectar a MongoDB:', error);
-    process.exit(1); // Detiene la aplicación
-  }
-})();
-
-
-// --- 5. DEFINICIÓN DE RUTAS DE LA API (AHORA CON MONGOOSE) ---
+// --- 5. DEFINICIÓN DE RUTAS DE LA API ---
 
 // Ruta Raíz
 app.get('/', (req, res) => {
   res.send('¡El cerebro de CuidarMed (Versión Personal) está funcionando y conectado a la BD!');
 });
 
-// [NUEVA RUTA DE LOGIN]
+// --- RUTA DE LOGIN (PÚBLICA) ---
+// [MODIFICADA] Ruta de Login
 app.post('/api/login', (req, res) => {
-  const { password } = req.body;
+  // 1. Buscamos la contraseña Y la nueva opción "recordarme"
+  const { password, recordarme } = req.body;
 
-  // 1. Comparamos la contraseña enviada con nuestro secreto
+  // 2. Comparamos la contraseña enviada con nuestro secreto
   if (password !== process.env.APP_SECRET_PASSWORD) {
     return res.status(401).json({ mensaje: "Contraseña incorrecta" });
   }
 
-  // 2. La contraseña es correcta: Creamos un "pase" (JWT)
-  // Firmamos el pase con nuestro secreto JWT_SECRET.
-  // Hacemos que el pase dure 8 horas.
+  // 3. La contraseña es correcta: Creamos un "pase" (JWT)
+  // ¡AQUÍ ESTÁ LA NUEVA LÓGICA!
+  // Si "recordarme" es true, el pase dura 30 días.
+  // Si no, dura 8 horas.
+  const expiresIn = recordarme ? '30d' : '8h';
+
   const token = jwt.sign(
-    { user: "admin" }, // Datos que guardamos dentro del pase
+    { user: "admin" }, 
     process.env.JWT_SECRET, 
-    { expiresIn: '8h' } // El pase caduca en 8 horas
+    { expiresIn: expiresIn } // Usamos la nueva duración
   );
 
-  // 3. Enviamos el pase al frontend
+  // 4. Enviamos el pase al frontend
   res.json({ token: token });
 });
 
-// GET /api/medicamentos - OBTENER todos los medicamentos
-// Usamos async/await porque hablar con la BD toma tiempo
+
+// --- RUTAS DE CRON JOBS (PROTEGIDAS POR SECRETO) ---
+app.get('/api/trigger-worker', (req, res) => {
+  const { secret } = req.query; 
+
+  if (secret !== process.env.CRON_SECRET) {
+    console.log('Intento de ejecución de worker RECHAZADO (secreto incorrecto)');
+    return res.status(401).send('No autorizado');
+  }
+
+  console.log('Intento de ejecución de worker ACEPTADO.');
+  res.status(200).send('Tarea de descuento iniciada. (La tarea corre en segundo plano)');
+  
+  ejecutarDescuentoStock();
+});
+
+app.get('/api/reporte-diario', (req, res) => {
+  const { secret } = req.query;
+
+  if (secret !== process.env.CRON_SECRET) {
+    console.log('Intento de REPORTE RECHAZADO (secreto incorrecto)');
+    return res.status(401).send('No autorizado');
+  }
+
+  console.log('Intento de REPORTE ACEPTADO.');
+  res.status(200).send('Reporte diario iniciado. (La tarea corre en segundo plano)');
+
+  const generarYEnviarReporte = async () => {
+    try {
+      const meds = await Medicamento.find().sort({ nombre: 1 }).lean();
+      
+      let mensaje = "<b>☀️ Reporte de Inventario Periódico ☀️</b>\n\n";
+      let hayAlertas = false;
+      
+      const hoy = new Date();
+      const fechaLimite = new Date();
+      fechaLimite.setDate(hoy.getDate() + 30);
+      
+      for (const med of meds) {
+        // Calculamos dias restantes aquí también
+        let diasRestantes = 0;
+        if (med.horarios && med.horarios.length > 0) {
+          diasRestantes = Math.floor(med.stockActual / med.horarios.length);
+        }
+
+        mensaje += `<b>${med.nombre}</b>: ${diasRestantes} días (Stock: ${med.stockActual})\n`;
+        
+        if (med.stockActual <= med.stockMinimo) {
+          mensaje += `  <pre>⚠️ ¡STOCK BAJO!</pre>\n`;
+          hayAlertas = true;
+        }
+        if (med.fechaVencimiento) {
+          const fechaVenc = new Date(med.fechaVencimiento);
+          if (fechaVenc <= fechaLimite) {
+            mensaje += `  <pre>🗓️ ¡VENCE PRONTO! (${fechaVenc.toLocaleDateString('es-AR')})</pre>\n`;
+            hayAlertas = true;
+          }
+        }
+      }
+      
+      if (!hayAlertas) {
+        mensaje += "\nTodo en orden. ¡Buen reporte! 👍";
+      }
+      
+      await enviarMensajeTelegram(mensaje);
+      
+    } catch (error) {
+      console.error("Error al generar el reporte diario:", error);
+    }
+  };
+  
+  generarYEnviarReporte();
+});
+
+
+// --- RUTAS PROTEGIDAS (Requieren 'authenticateToken') ---
+
 app.get('/api/medicamentos', authenticateToken, async (req, res) => {
   try {
-    // 1. Usamos .lean() para obtener objetos JS puros (más rápidos y fáciles de modificar)
     const medicamentos = await Medicamento.find().lean(); 
-
-    // 2. [NUEVA LÓGICA] Iteramos sobre la lista para añadir el nuevo campo
     const medicamentosConCalculo = medicamentos.map(med => {
-      let diasRestantes = 0; // Por defecto 0
-
-      // 3. Verificamos que tengamos horarios para evitar dividir por cero
+      let diasRestantes = 0;
       if (med.horarios && med.horarios.length > 0) {
-        // 4. Hacemos el cálculo: Stock / Tomas por día
         diasRestantes = Math.floor(med.stockActual / med.horarios.length);
       }
-
-      // 5. Devolvemos el objeto original + el nuevo campo 'diasRestantes'
       return {
         ...med,
-        diasRestantes: diasRestantes 
+        diasRestantes: diasRestantes
       };
     });
-
-    // 6. Enviamos la lista MODIFICADA
-    res.json(medicamentosConCalculo); 
-
+    res.json(medicamentosConCalculo);
   } catch (error) {
     console.error('ERROR en GET /api/medicamentos:', error);
     res.status(500).json({ mensaje: "Error al obtener medicamentos", error });
   }
 });
 
-// POST /api/medicamentos - AGREGAR un nuevo medicamento
+app.get('/api/historial', authenticateToken, async (req, res) => {
+  try {
+    const historial = await Historial.find().sort({ fecha: -1 }).limit(50);
+    res.json(historial);
+  } catch (error) {
+    console.error('ERROR en GET /api/historial:', error);
+    res.status(500).json({ mensaje: "Error al obtener historial", error });
+  }
+});
+
 app.post('/api/medicamentos', authenticateToken, async (req, res) => {
   try {
     const nuevoMed = new Medicamento(req.body);
     const medicamentoGuardado = await nuevoMed.save();
 
-    // [NUEVO] Registramos la "Carga Inicial" en el historial
     if (medicamentoGuardado.stockActual > 0) {
       await Historial.create({
         medicamentoNombre: medicamentoGuardado.nombre,
@@ -144,7 +201,7 @@ app.post('/api/medicamentos', authenticateToken, async (req, res) => {
         tipo: 'Carga Inicial'
       });
     }
-
+    
     res.status(201).json(medicamentoGuardado);
   } catch (error) {
     console.error('ERROR en POST /api/medicamentos:', error);
@@ -152,88 +209,16 @@ app.post('/api/medicamentos', authenticateToken, async (req, res) => {
   }
 });
 
-// POST /api/tomas - CONFIRMAR UNA TOMA (Descontar stock)
-app.post('/api/tomas', authenticateToken, async (req, res) => {
-  try {
-    const { medicamentoId } = req.body;
-
-    // 1. Buscamos el medicamento en la BD por su ID
-    const medicamento = await Medicamento.findById(medicamentoId);
-
-    if (!medicamento) {
-      return res.status(404).json({ mensaje: "Medicamento no encontrado" });
-    }
-
-    // 2. Verificamos stock
-    if (medicamento.stockActual <= 0) {
-      return res.status(400).json({ mensaje: "Error: No hay stock de " + medicamento.nombre });
-    }
-
-    // 3. Descontamos el stock
-    medicamento.stockActual--;
-
-    // 4. [NUEVA LÓGICA DE ALARMA]
-    if (medicamento.stockActual <= medicamento.stockMinimo) {
-      console.log(`ALERTA DE STOCK BAJO: Quedan ${medicamento.stockActual} unidades de ${medicamento.nombre}`);
-      // (Aquí es donde en el futuro enviaremos la notificación push)
-    }
-
-    // 5. Guardamos los cambios en la BD
-    const medicamentoActualizado = await medicamento.save();
-    
-    res.json(medicamentoActualizado);
-
-  } catch (error) {
-    console.error('ERROR en GET /api/medicamentos:', error); // <-- AÑADE ESTA LÍNEA
-    res.status(500).json({ mensaje: "Error al procesar la toma", error });
-  }
-});
-
-// (Opcional) Ruta para RECARGAR STOCK
-// PUT /api/medicamentos/:id/recargar
-app.put('/api/medicamentos/:id/recargar', authenticateToken, async (req, res) => {
-    try {
-        const { cantidad } = req.body; // Esperamos un JSON: { "cantidad": 30 }
-        const medicamento = await Medicamento.findById(req.params.id);
-
-        if (!medicamento) {
-            return res.status(404).json({ mensaje: "Medicamento no encontrado" });
-        }
-
-        medicamento.stockActual += cantidad; // Sumamos la cantidad al stock
-
-        medicamento.avisoStockEnviado = false;
-
-        const medicamentoActualizado = await medicamento.save();
-
-        // Registramos la recarga en el historial
-        await Historial.create({
-          medicamentoNombre: medicamentoActualizado.nombre,
-          movimiento: cantidad,
-          tipo: 'Recarga'
-        });
-        
-        console.log(`STOCK RECARGADO: ${medicamento.nombre} ahora tiene ${medicamento.stockActual} unidades.`);
-        res.json(medicamentoActualizado);
-
-    } catch (error) {
-        res.status(500).json({ mensaje: "Error al recargar stock", error });
-    }
-});
-
-// PUT /api/medicamentos/:id - ACTUALIZAR (Editar) un medicamento
 app.put('/api/medicamentos/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const datosActualizados = req.body;
 
-    // 1. Buscamos el medicamento ANTES de actualizarlo
     const medViejo = await Medicamento.findById(id);
     if (!medViejo) {
       return res.status(404).json({ mensaje: "Medicamento no encontrado" });
     }
 
-    // [LÓGICA DE VENCIMIENTO] (Esta ya la tenías)
     const fechaVieja = medViejo.fechaVencimiento ? medViejo.fechaVencimiento.toISOString() : null;
     const fechaNueva = datosActualizados.fechaVencimiento ? datosActualizados.fechaVencimiento : null;
 
@@ -241,28 +226,24 @@ app.put('/api/medicamentos/:id', authenticateToken, async (req, res) => {
       datosActualizados.avisoVencimientoEnviado = false;
     }
 
-    // 2. Ahora sí, actualizamos el medicamento
     const medicamentoActualizado = await Medicamento.findByIdAndUpdate(
       id, 
       datosActualizados, 
       { new: true, runValidators: true }
     );
 
-    // 3. [NUEVO] Comparamos el stock y registramos el cambio
     const stockViejo = medViejo.stockActual;
     const stockNuevo = medicamentoActualizado.stockActual;
 
     if (stockViejo !== stockNuevo) {
-      const movimiento = stockNuevo - stockViejo; // Ej: 50 - 30 = +20
-
+      const movimiento = stockNuevo - stockViejo;
+      
       await Historial.create({
         medicamentoNombre: medicamentoActualizado.nombre,
         movimiento: movimiento,
-        tipo: 'Ajuste Manual' // O 'Recarga' si quieres
+        tipo: 'Ajuste Manual'
       });
-
-      // [Opcional] Si el ajuste manual hace que el stock suba,
-      // reseteamos el aviso de "stock bajo"
+      
       if (stockNuevo > medViejo.stockMinimo) {
          medicamentoActualizado.avisoStockEnviado = false;
          await medicamentoActualizado.save();
@@ -277,53 +258,66 @@ app.put('/api/medicamentos/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// [NUEVO] Ruta para ELIMINAR un medicamento por ID
-// DELETE /api/medicamentos/:id
 app.delete('/api/medicamentos/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-
     const medicamentoEliminado = await Medicamento.findByIdAndDelete(id);
 
     if (!medicamentoEliminado) {
       return res.status(404).json({ mensaje: "Medicamento no encontrado para eliminar" });
     }
-
-    // Devolvemos un mensaje de éxito
+    
     res.json({ mensaje: "Medicamento eliminado exitosamente" });
 
   } catch (error) {
+    console.error('ERROR en DELETE /api/medicamentos/:id:', error);
     res.status(500).json({ mensaje: "Error al eliminar el medicamento", error });
   }
 });
 
-// [NUEVO] Ruta secreta para disparar el worker
-app.get('/api/trigger-worker', (req, res) => {
-  const { secret } = req.query; // Busca el secreto en la URL
+app.put('/api/medicamentos/:id/recargar', authenticateToken, async (req, res) => {
+    try {
+        const { cantidad } = req.body; 
+        const { id } = req.params;
+        const medicamento = await Medicamento.findById(id);
 
-  // 1. Verificamos que el secreto sea correcto
-  if (secret !== process.env.CRON_SECRET) {
-    console.log('Intento de ejecución de worker RECHAZADO (secreto incorrecto)');
-    return res.status(401).send('No autorizado');
-  }
+        if (!medicamento) {
+            return res.status(404).json({ mensaje: "Medicamento no encontrado" });
+        }
 
-  // 2. Si es correcto, respondemos INMEDIATAMENTE
-  console.log('Intento de ejecución de worker ACEPTADO.');
-  res.status(200).send('Tarea de descuento iniciada. (La tarea corre en segundo plano)');
+        medicamento.stockActual += cantidad; 
+        medicamento.avisoStockEnviado = false; // Reseteamos el flag de aviso
+        const medicamentoActualizado = await medicamento.save();
+        
+        // Registramos la recarga en el historial
+        await Historial.create({
+          medicamentoNombre: medicamentoActualizado.nombre,
+          movimiento: cantidad,
+          tipo: 'Recarga'
+        });
 
-  // 3. Y LUEGO, ejecutamos la tarea (sin "await")
-  // Esto (sin await) permite que el servicio de cron reciba la respuesta
-  // rápido, mientras la tarea pesada corre en segundo plano.
-  ejecutarDescuentoStock();
+        console.log(`STOCK RECARGADO: ${medicamento.nombre} ahora tiene ${medicamento.stockActual} unidades.`);
+        res.json(medicamentoActualizado);
+
+    } catch (error) {
+        console.error('ERROR en PUT .../recargar:', error);
+        res.status(500).json({ mensaje: "Error al recargar stock", error });
+    }
 });
 
-app.get('/api/historial', authenticateToken, async (req, res) => {
+
+// --- 6. CONEXIÓN A LA BASE DE DATOS ---
+(async () => {
   try {
-    // Buscamos los últimos 50 registros, ordenados del más nuevo al más viejo
-    const historial = await Historial.find().sort({ fecha: -1 }).limit(50);
-    res.json(historial);
+    await mongoose.connect(MONGO_URI);
+    console.log('¡Conectado exitosamente a MongoDB Atlas! 🚀');
+
+    app.listen(PORT, () => {
+      console.log(`Servidor escuchando en http://localhost:${PORT}`);
+    });
+
   } catch (error) {
-    console.error('ERROR en GET /api/historial:', error);
-    res.status(500).json({ mensaje: "Error al obtener historial", error });
+    console.error('Error al conectar a MongoDB:', error);
+    process.exit(1);
   }
-});
+})();
