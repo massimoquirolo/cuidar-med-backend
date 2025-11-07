@@ -1,3 +1,5 @@
+// index.js
+
 // --- 1. IMPORTACIONES ---
 const express = require('express');
 const mongoose = require('mongoose');
@@ -8,6 +10,8 @@ const Medicamento = require('./models/Medicamento');
 const Historial = require('./models/Historial');
 const { ejecutarDescuentoStock } = require('./worker.js');
 const { enviarMensajeTelegram } = require('./telegramHelper.js');
+// Importamos el validador
+const { validarMedicamento } = require('./validations');
 
 // --- 2. CONFIGURACIÓN INICIAL ---
 const app = express();
@@ -16,32 +20,26 @@ const MONGO_URI = process.env.MONGO_URI;
 
 // --- 3. MIDDLEWARES ---
 app.use(express.json());
-// Configuración de CORS específica para tu app de Vercel
+// Configuración de CORS
 const corsOptions = {
-  origin: 'https://cuidar-med-frontend.vercel.app'
+  origin: ['https://cuidar-med-frontend.vercel.app', 'http://localhost:5173']
 };
 app.use(cors(corsOptions));
 
 
 // --- 4. MIDDLEWARE DE AUTENTICACIÓN (El "Guardia") ---
 const authenticateToken = (req, res, next) => {
-  // Buscamos el "pase" en los headers de la petición
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Formato "Bearer TOKEN"
+  const token = authHeader && authHeader.split(' ')[1];
 
   if (token == null) {
-    // No hay pase, lo rechazamos
     return res.status(401).json({ mensaje: "No autorizado (Token no provisto)" });
   }
 
-  // Verificamos si el pase es válido
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) {
-      // El pase es falso o expiró, lo rechazamos
-      return res.status(403).json({ mensaje: "Token inválido" });
+      return res.status(403).json({ mensaje: "Token inválido o expirado" });
     }
-    
-    // El pase es válido, dejamos que la petición continúe
     req.user = user;
     next();
   });
@@ -52,40 +50,33 @@ const authenticateToken = (req, res, next) => {
 
 // Ruta Raíz
 app.get('/', (req, res) => {
-  res.send('¡El cerebro de CuidarMed (Versión Personal) está funcionando y conectado a la BD!');
+  res.send('¡El cerebro de CuidarMed (Versión Segura) está funcionando!');
 });
 
 // --- RUTA DE LOGIN (PÚBLICA) ---
-// [MODIFICADA] Ruta de Login
 app.post('/api/login', (req, res) => {
-  // 1. Buscamos la contraseña Y la nueva opción "recordarme"
+  // CORREGIDO AQUÍ: Se eliminó el 'ZS' que se había colado
   const { password, recordarme } = req.body;
 
-  // 2. Comparamos la contraseña enviada con nuestro secreto
   if (password !== process.env.APP_SECRET_PASSWORD) {
     return res.status(401).json({ mensaje: "Contraseña incorrecta" });
   }
 
-  // 3. La contraseña es correcta: Creamos un "pase" (JWT)
-  // ¡AQUÍ ESTÁ LA NUEVA LÓGICA!
-  // Si "recordarme" es true, el pase dura 30 días.
-  // Si no, dura 8 horas.
   const expiresIn = recordarme ? '30d' : '8h';
 
   const token = jwt.sign(
-    { user: "admin" }, 
-    process.env.JWT_SECRET, 
-    { expiresIn: expiresIn } // Usamos la nueva duración
+    { user: "admin" },
+    process.env.JWT_SECRET,
+    { expiresIn: expiresIn }
   );
 
-  // 4. Enviamos el pase al frontend
   res.json({ token: token });
 });
 
 
 // --- RUTAS DE CRON JOBS (PROTEGIDAS POR SECRETO) ---
 app.get('/api/trigger-worker', (req, res) => {
-  const { secret } = req.query; 
+  const { secret } = req.query;
 
   if (secret !== process.env.CRON_SECRET) {
     console.log('Intento de ejecución de worker RECHAZADO (secreto incorrecto)');
@@ -93,8 +84,10 @@ app.get('/api/trigger-worker', (req, res) => {
   }
 
   console.log('Intento de ejecución de worker ACEPTADO.');
-  res.status(200).send('Tarea de descuento iniciada. (La tarea corre en segundo plano)');
-  
+  // Respondemos rápido a Vercel Cron para evitar timeouts
+  res.status(200).send('Tarea de descuento iniciada en segundo plano.');
+
+  // Ejecutamos la tarea sin esperar (fire-and-forget para la respuesta HTTP)
   ejecutarDescuentoStock();
 });
 
@@ -107,28 +100,27 @@ app.get('/api/reporte-diario', (req, res) => {
   }
 
   console.log('Intento de REPORTE ACEPTADO.');
-  res.status(200).send('Reporte diario iniciado. (La tarea corre en segundo plano)');
+  res.status(200).send('Reporte diario iniciado en segundo plano.');
 
   const generarYEnviarReporte = async () => {
     try {
       const meds = await Medicamento.find().sort({ nombre: 1 }).lean();
-      
+
       let mensaje = "<b>☀️ Reporte de Inventario Periódico ☀️</b>\n\n";
       let hayAlertas = false;
-      
+
       const hoy = new Date();
       const fechaLimite = new Date();
       fechaLimite.setDate(hoy.getDate() + 30);
-      
+
       for (const med of meds) {
-        // Calculamos dias restantes aquí también
         let diasRestantes = 0;
         if (med.horarios && med.horarios.length > 0) {
           diasRestantes = Math.floor(med.stockActual / med.horarios.length);
         }
 
         mensaje += `<b>${med.nombre}</b>: ${diasRestantes} días (Stock: ${med.stockActual})\n`;
-        
+
         if (med.stockActual <= med.stockMinimo) {
           mensaje += `  <pre>⚠️ ¡STOCK BAJO!</pre>\n`;
           hayAlertas = true;
@@ -141,18 +133,18 @@ app.get('/api/reporte-diario', (req, res) => {
           }
         }
       }
-      
+
       if (!hayAlertas) {
         mensaje += "\nTodo en orden. ¡Buen reporte! 👍";
       }
-      
+
       await enviarMensajeTelegram(mensaje);
-      
+
     } catch (error) {
       console.error("Error al generar el reporte diario:", error);
     }
   };
-  
+
   generarYEnviarReporte();
 });
 
@@ -161,7 +153,7 @@ app.get('/api/reporte-diario', (req, res) => {
 
 app.get('/api/medicamentos', authenticateToken, async (req, res) => {
   try {
-    const medicamentos = await Medicamento.find().lean(); 
+    const medicamentos = await Medicamento.find().lean();
     const medicamentosConCalculo = medicamentos.map(med => {
       let diasRestantes = 0;
       if (med.horarios && med.horarios.length > 0) {
@@ -189,7 +181,8 @@ app.get('/api/historial', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/medicamentos', authenticateToken, async (req, res) => {
+// [USO DEL VALIDADOR]
+app.post('/api/medicamentos', authenticateToken, validarMedicamento, async (req, res) => {
   try {
     const nuevoMed = new Medicamento(req.body);
     const medicamentoGuardado = await nuevoMed.save();
@@ -201,15 +194,16 @@ app.post('/api/medicamentos', authenticateToken, async (req, res) => {
         tipo: 'Carga Inicial'
       });
     }
-    
+
     res.status(201).json(medicamentoGuardado);
   } catch (error) {
     console.error('ERROR en POST /api/medicamentos:', error);
-    res.status(400).json({ mensaje: "Error al guardar el medicamento", error });
+    res.status(500).json({ mensaje: "Error interno al guardar el medicamento", error });
   }
 });
 
-app.put('/api/medicamentos/:id', authenticateToken, async (req, res) => {
+// [USO DEL VALIDADOR]
+app.put('/api/medicamentos/:id', authenticateToken, validarMedicamento, async (req, res) => {
   try {
     const { id } = req.params;
     const datosActualizados = req.body;
@@ -219,17 +213,17 @@ app.put('/api/medicamentos/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ mensaje: "Medicamento no encontrado" });
     }
 
-    const fechaVieja = medViejo.fechaVencimiento ? medViejo.fechaVencimiento.toISOString() : null;
-    const fechaNueva = datosActualizados.fechaVencimiento ? datosActualizados.fechaVencimiento : null;
+    const fechaVieja = medViejo.fechaVencimiento ? new Date(medViejo.fechaVencimiento).toISOString() : null;
+    const fechaNueva = datosActualizados.fechaVencimiento ? new Date(datosActualizados.fechaVencimiento).toISOString() : null;
 
     if (fechaNueva !== fechaVieja) {
       datosActualizados.avisoVencimientoEnviado = false;
     }
 
     const medicamentoActualizado = await Medicamento.findByIdAndUpdate(
-      id, 
-      datosActualizados, 
-      { new: true, runValidators: true }
+      id,
+      datosActualizados,
+      { new: true }
     );
 
     const stockViejo = medViejo.stockActual;
@@ -237,13 +231,12 @@ app.put('/api/medicamentos/:id', authenticateToken, async (req, res) => {
 
     if (stockViejo !== stockNuevo) {
       const movimiento = stockNuevo - stockViejo;
-      
       await Historial.create({
         medicamentoNombre: medicamentoActualizado.nombre,
         movimiento: movimiento,
         tipo: 'Ajuste Manual'
       });
-      
+
       if (stockNuevo > medViejo.stockMinimo) {
          medicamentoActualizado.avisoStockEnviado = false;
          await medicamentoActualizado.save();
@@ -254,7 +247,7 @@ app.put('/api/medicamentos/:id', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('ERROR en PUT /api/medicamentos/:id:', error);
-    res.status(400).json({ mensaje: "Error al actualizar el medicamento", error });
+    res.status(500).json({ mensaje: "Error interno al actualizar", error });
   }
 });
 
@@ -266,7 +259,7 @@ app.delete('/api/medicamentos/:id', authenticateToken, async (req, res) => {
     if (!medicamentoEliminado) {
       return res.status(404).json({ mensaje: "Medicamento no encontrado para eliminar" });
     }
-    
+
     res.json({ mensaje: "Medicamento eliminado exitosamente" });
 
   } catch (error) {
@@ -277,7 +270,11 @@ app.delete('/api/medicamentos/:id', authenticateToken, async (req, res) => {
 
 app.put('/api/medicamentos/:id/recargar', authenticateToken, async (req, res) => {
     try {
-        const { cantidad } = req.body; 
+        const { cantidad } = req.body;
+        if (!cantidad || isNaN(cantidad) ||Number(cantidad) <= 0) {
+             return res.status(400).json({ mensaje: "La cantidad a recargar debe ser un número positivo." });
+        }
+
         const { id } = req.params;
         const medicamento = await Medicamento.findById(id);
 
@@ -285,14 +282,13 @@ app.put('/api/medicamentos/:id/recargar', authenticateToken, async (req, res) =>
             return res.status(404).json({ mensaje: "Medicamento no encontrado" });
         }
 
-        medicamento.stockActual += cantidad; 
-        medicamento.avisoStockEnviado = false; // Reseteamos el flag de aviso
+        medicamento.stockActual += Number(cantidad);
+        medicamento.avisoStockEnviado = false;
         const medicamentoActualizado = await medicamento.save();
-        
-        // Registramos la recarga en el historial
+
         await Historial.create({
           medicamentoNombre: medicamentoActualizado.nombre,
-          movimiento: cantidad,
+          movimiento: Number(cantidad),
           tipo: 'Recarga'
         });
 
